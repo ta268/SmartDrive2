@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">SmartDrive</string>
+    <string name="score_title">運転スコア</string>
+    <string name="shock_log_title">衝撃検知ログ</string>
+    <string name="video_title">事故発生時の映像</string>
+    <string name="no_video_data">表示するデータがありません。\nインポートしてください。</string>
+    <string name="import_video">インポート</string>
+</resources>
