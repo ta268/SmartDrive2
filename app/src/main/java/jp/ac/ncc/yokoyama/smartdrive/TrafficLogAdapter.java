@@ -29,7 +29,7 @@ public class TrafficLogAdapter extends RecyclerView.Adapter<TrafficLogAdapter.Lo
     @Override
     public void onBindViewHolder(@NonNull LogViewHolder holder, int position) {
         TrafficLog log = logList.get(position);
-        holder.textContent.setText(String.format("[%s]\n%sを検知しました。", log.getTimestamp(), log.getEventNameJa()));
+        holder.textContent.setText(String.format("[%s]\n%sを検知しました。\n場所: %s", log.getTimestamp(), log.getEventNameJa(), log.getAddress()));
 
         holder.itemView.setOnClickListener(v -> {
             Intent intent = new Intent(v.getContext(), LogDetailActivity.class);

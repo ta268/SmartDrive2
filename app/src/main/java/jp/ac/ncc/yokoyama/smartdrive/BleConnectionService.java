@@ -30,6 +30,14 @@ import androidx.core.app.NotificationCompat;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
 
+import android.Manifest;
+import android.content.pm.PackageManager;
+import android.location.Location;
+import android.location.LocationListener;
+import android.location.LocationManager;
+import android.os.Bundle;
+import androidx.core.content.ContextCompat;
+
 @SuppressLint("MissingPermission")
 public class BleConnectionService extends Service {
     private static final String TAG = "BleConnectionService";
@@ -46,8 +54,8 @@ public class BleConnectionService extends Service {
     public static final int STATE_CONNECTED = 2;
 
     // UUID Definitions (Custom Service and Characteristic)
-    public static final UUID SERVICE_UUID = UUID.fromString("0000ffe0-0000-1000-8000-00805f9b34fb");
-    public static final UUID CHAR_UUID    = UUID.fromString("0000ffe1-0000-1000-8000-00805f9b34fb");
+    public static final UUID SERVICE_UUID = UUID.fromString("6E400001-B5A3-F393-E0A9-E50E24DCCA9E");
+    public static final UUID CHAR_UUID    = UUID.fromString("6E400003-B5A3-F393-E0A9-E50E24DCCA9E");
     // RX Characteristic: Android → Raspberry Pi (書き込み用)
     public static final UUID RX_CHAR_UUID = UUID.fromString("6e400002-b5a3-f393-e0a9-e50e24dcca9e");
     private static final UUID CCCD_UUID   = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");
@@ -58,14 +66,34 @@ public class BleConnectionService extends Service {
     private BluetoothAdapter bluetoothAdapter;
     private BluetoothLeScanner bluetoothLeScanner;
     private BluetoothGatt bluetoothGatt;
-    
+
     private String targetDeviceName = "omnibus185";
     private int connectionState = STATE_DISCONNECTED;
-    
+
     private final Handler handler = new Handler(Looper.getMainLooper());
     private boolean isScanning = false;
     private int retryCount = 0;
-    
+
+    private LocationManager locationManager;
+    private Location lastLocation;
+
+    private final LocationListener locationListener = new LocationListener() {
+        @Override
+        public void onLocationChanged(Location location) {
+            lastLocation = location;
+            Log.d(TAG, "Location updated: " + location.getLatitude() + ", " + location.getLongitude());
+        }
+
+        @Override
+        public void onProviderEnabled(String provider) {}
+
+        @Override
+        public void onProviderDisabled(String provider) {}
+
+        @Override
+        public void onStatusChanged(String provider, int status, Bundle extras) {}
+    };
+
     private long lastDataReceivedTime = 0;
     private final Runnable zombieWatchdog = new Runnable() {
         @Override
@@ -96,6 +124,9 @@ public class BleConnectionService extends Service {
             Log.e(TAG, "Bluetooth not supported");
         }
 
+        locationManager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
+        startLocationUpdates();
+
         // ゾンビ監視タイマーの開始
         handler.postDelayed(zombieWatchdog, 30000);
     }
@@ -106,12 +137,12 @@ public class BleConnectionService extends Service {
         if (intent != null && intent.hasExtra("device_name")) {
             targetDeviceName = intent.getStringExtra("device_name");
         }
-        
+
         if (connectionState == STATE_DISCONNECTED && !isScanning) {
             retryCount = 0;
             startScanAndConnect();
         }
-        
+
         return START_STICKY;
     }
 
@@ -122,6 +153,7 @@ public class BleConnectionService extends Service {
         handler.removeCallbacksAndMessages(null);
         stopScanningInternal();
         disconnectGatt();
+        stopLocationUpdates();
     }
 
     @Override
@@ -144,7 +176,7 @@ public class BleConnectionService extends Service {
                 statusText = "切断状態: 再接続待機中";
                 break;
         }
-        
+
         // フォアグラウンド通知の表示更新
         NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         if (manager != null) {
@@ -199,7 +231,13 @@ public class BleConnectionService extends Service {
         @Override
         public void onScanResult(int callbackType, ScanResult result) {
             BluetoothDevice device = result.getDevice();
-            String name = device.getName();
+            String name = null;
+            if (result.getScanRecord() != null) {
+                name = result.getScanRecord().getDeviceName();
+            }
+            if (name == null) {
+                name = device.getName();
+            }
             if (name != null && name.equals(targetDeviceName)) {
                 Log.d(TAG, "Found target device: " + name + " [" + device.getAddress() + "]");
                 stopScanningInternal();
@@ -242,11 +280,11 @@ public class BleConnectionService extends Service {
 
     private void scheduleReconnect() {
         updateState(STATE_DISCONNECTED);
-        
+
         // 指数バックオフ: 2s, 4s, 8s, 16s, 30s (max)
         long delay = (long) Math.min(30000, 2000 * Math.pow(2, retryCount));
         retryCount++;
-        
+
         Log.d(TAG, "Scheduling reconnect in " + delay + " ms (retry count: " + retryCount + ")");
         handler.postDelayed(() -> {
             if (connectionState == STATE_DISCONNECTED) {
@@ -262,7 +300,7 @@ public class BleConnectionService extends Service {
                 Log.i(TAG, "GATT Connected to " + gatt.getDevice().getName());
                 retryCount = 0;
                 lastDataReceivedTime = System.currentTimeMillis();
-                
+
                 // MTU 拡張を要求 (512バイト)
                 Log.d(TAG, "Requesting MTU 512");
                 gatt.requestMtu(512);
@@ -350,7 +388,66 @@ public class BleConnectionService extends Service {
         // JSON受信をブロードキャストで通知
         Intent intent = new Intent(ACTION_DATA_RECEIVED);
         intent.putExtra(EXTRA_DATA, jsonStr);
+        if (lastLocation != null) {
+            intent.putExtra("latitude", lastLocation.getLatitude());
+            intent.putExtra("longitude", lastLocation.getLongitude());
+        } else {
+            intent.putExtra("latitude", 0.0);
+            intent.putExtra("longitude", 0.0);
+        }
         sendBroadcast(intent);
+    }
+
+    private void startLocationUpdates() {
+        if (locationManager == null) return;
+        try {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+                    || ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+
+                // Get last known location first as a fallback
+                Location gpsLoc = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
+                Location netLoc = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER);
+                if (gpsLoc != null && netLoc != null) {
+                    lastLocation = gpsLoc.getTime() > netLoc.getTime() ? gpsLoc : netLoc;
+                } else {
+                    lastLocation = gpsLoc != null ? gpsLoc : netLoc;
+                }
+
+                // Request updates: every 5 seconds or 5 meters
+                if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+                    locationManager.requestLocationUpdates(
+                            LocationManager.GPS_PROVIDER,
+                            5000,
+                            5f,
+                            locationListener
+                    );
+                }
+                if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+                    locationManager.requestLocationUpdates(
+                            LocationManager.NETWORK_PROVIDER,
+                            5000,
+                            5f,
+                            locationListener
+                    );
+                }
+                Log.d(TAG, "Location updates started");
+            } else {
+                Log.w(TAG, "Location permission not granted for service");
+            }
+        } catch (SecurityException e) {
+            Log.e(TAG, "SecurityException starting location updates", e);
+        }
+    }
+
+    private void stopLocationUpdates() {
+        if (locationManager != null && locationListener != null) {
+            try {
+                locationManager.removeUpdates(locationListener);
+                Log.d(TAG, "Location updates stopped");
+            } catch (Exception e) {
+                Log.e(TAG, "Error stopping location updates", e);
+            }
+        }
     }
 
     private void enableCharacteristicNotification(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic) {

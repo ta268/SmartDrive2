@@ -10,6 +10,17 @@ import android.graphics.Color;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
+
+import android.net.Uri;
+import android.view.View;
+import android.widget.Button;
+import android.widget.LinearLayout;
+import android.widget.MediaController;
+import android.widget.VideoView;
+
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
+
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -35,9 +46,18 @@ public class MainActivity extends AppCompatActivity {
     private static final int PERMISSION_REQUEST_CODE = 100;
     private TrafficEventHandler trafficEventHandler;
 
-    private TextView scoreTextView;
+    //private TextView scoreTextView;
+    //private TrafficLogAdapter logAdapter;
+    //private RecyclerView recyclerViewLog;
+   private TextView scoreTextView;
     private TrafficLogAdapter logAdapter;
     private RecyclerView recyclerViewLog;
+
+    private Button buttonImportVideo;
+    private VideoView videoView;
+    private LinearLayout layoutNoVideoPlaceholder;
+
+    private ActivityResultLauncher<Intent> videoPickerLauncher;
 
     private final BroadcastReceiver bleReceiver = new BroadcastReceiver() {
         @Override
@@ -52,12 +72,15 @@ public class MainActivity extends AppCompatActivity {
                 }
             } else if (BleConnectionService.ACTION_DATA_RECEIVED.equals(action)) {
                 String jsonData = intent.getStringExtra(BleConnectionService.EXTRA_DATA);
+                double latitude = intent.getDoubleExtra("latitude", 0.0);
+                double longitude = intent.getDoubleExtra("longitude", 0.0);
                 if (jsonData != null) {
-                    parseAndProcessJson(jsonData);
+                    parseAndProcessJson(jsonData, latitude, longitude);
                 }
             }
         }
     };
+
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -71,6 +94,11 @@ public class MainActivity extends AppCompatActivity {
         });
 
         scoreTextView = findViewById(R.id.text_score);
+        scoreTextView.setText("100"); // 起動時のデフォルトスコアを表示
+
+        buttonImportVideo = findViewById(R.id.button_import_video);
+        videoView = findViewById(R.id.video_view);
+        layoutNoVideoPlaceholder = findViewById(R.id.layout_no_video_placeholder);
 
         // RecyclerView の初期設定
         recyclerViewLog = findViewById(R.id.recycler_view_log);
@@ -82,6 +110,39 @@ public class MainActivity extends AppCompatActivity {
         findViewById(R.id.button_settings).setOnClickListener(v -> {
             Intent intent = new Intent(MainActivity.this, SettingsActivity.class);
             startActivity(intent);
+        });
+        videoPickerLauncher =
+                registerForActivityResult(
+                        new ActivityResultContracts.StartActivityForResult(),
+                        result -> {
+
+                            if (result.getResultCode() == RESULT_OK &&
+                                    result.getData() != null) {
+
+                                Uri videoUri = result.getData().getData();
+
+                                layoutNoVideoPlaceholder.setVisibility(View.GONE);
+                                videoView.setVisibility(View.VISIBLE);
+
+                                MediaController controller =
+                                        new MediaController(MainActivity.this);
+
+                                controller.setAnchorView(videoView);
+                                videoView.setMediaController(controller);
+
+                                videoView.setVideoURI(videoUri);
+                                videoView.start();
+                            }
+                        });
+
+        buttonImportVideo.setOnClickListener(v -> {
+
+            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.setType("video/*");
+
+            videoPickerLauncher.launch(intent);
+
         });
 
         checkBluetoothPermissions();
@@ -121,6 +182,9 @@ public class MainActivity extends AppCompatActivity {
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissions.add(Manifest.permission.POST_NOTIFICATIONS);
+            permissions.add(Manifest.permission.READ_MEDIA_VIDEO);
+        } else {
+            permissions.add(Manifest.permission.READ_EXTERNAL_STORAGE);
         }
 
         List<String> remainingPermissions = new ArrayList<>();
@@ -185,7 +249,7 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void parseAndProcessJson(String jsonString) {
+    private void parseAndProcessJson(String jsonString, double latitude, double longitude) {
         try {
             JSONObject jsonObject = new JSONObject(jsonString);
             float x = (float) jsonObject.optDouble("x", 0.0);
@@ -202,19 +266,19 @@ public class MainActivity extends AppCompatActivity {
 
             // イベントキーが存在し、かつ true の場合のみ通知
             if (jsonObject.optBoolean("s_braked", false)) {
-                if (trafficEventHandler != null) trafficEventHandler.handleDangerousEvent("s_braked");
+                if (trafficEventHandler != null) trafficEventHandler.handleDangerousEvent("s_braked", latitude, longitude);
             }
             if (jsonObject.optBoolean("s_accelerated", false)) {
-                if (trafficEventHandler != null) trafficEventHandler.handleDangerousEvent("s_accelerated");
+                if (trafficEventHandler != null) trafficEventHandler.handleDangerousEvent("s_accelerated", latitude, longitude);
             }
             if (jsonObject.optBoolean("s_steered", false)) {
-                if (trafficEventHandler != null) trafficEventHandler.handleDangerousEvent("s_steered");
+                if (trafficEventHandler != null) trafficEventHandler.handleDangerousEvent("s_steered", latitude, longitude);
             }
             if (jsonObject.optBoolean("waved", false)) {
-                if (trafficEventHandler != null) trafficEventHandler.handleDangerousEvent("waved");
+                if (trafficEventHandler != null) trafficEventHandler.handleDangerousEvent("waved", latitude, longitude);
             }
             if (jsonObject.optBoolean("unstable_speed", false)) {
-                if (trafficEventHandler != null) trafficEventHandler.handleDangerousEvent("unstable_speed");
+                if (trafficEventHandler != null) trafficEventHandler.handleDangerousEvent("unstable_speed", latitude, longitude);
             }
         } catch (JSONException e) {
             Log.e("MainActivity", "Error parsing BLE JSON: " + jsonString, e);

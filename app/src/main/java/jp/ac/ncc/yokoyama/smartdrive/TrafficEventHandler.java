@@ -10,6 +10,12 @@ import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
 
+import android.location.Address;
+import android.location.Geocoder;
+import java.io.IOException;
+import java.util.List;
+import androidx.recyclerview.widget.RecyclerView;
+
 public class TrafficEventHandler {
 
     private Context context;
@@ -25,6 +31,7 @@ public class TrafficEventHandler {
     public TrafficEventHandler(Context context) {
         this.context = context;
         this.mainHandler = new Handler(Looper.getMainLooper());
+        this.driving_score = 100; // 初期スコアは100点
     }
 
     // イベント英語名 -> 日本語変換
@@ -40,6 +47,10 @@ public class TrafficEventHandler {
     }
 
     public void handleDangerousEvent(String eventType) {
+        handleDangerousEvent(eventType, 0.0, 0.0);
+    }
+
+    public void handleDangerousEvent(String eventType, final double latitude, final double longitude) {
         final int GREEN = 0;
         final int YELLOW = 1;
         final int RED = 2;
@@ -76,8 +87,46 @@ public class TrafficEventHandler {
             }
 
             // ログをメイン画面のリストに追加
-            TrafficLog log = new TrafficLog(timestamp, eventNameJa, snapX, snapY, snapZ, 0.0, 0.0);
+            String initialAddress = (latitude == 0.0 && longitude == 0.0) ? "位置情報なし" : "住所を取得中...";
+            final TrafficLog log = new TrafficLog(timestamp, eventNameJa, snapX, snapY, snapZ, latitude, longitude, initialAddress);
             ((MainActivity) context).addLogToUI(log);
+
+            // 位置情報が利用可能な場合、非同期で住所を取得
+            if (latitude != 0.0 || longitude != 0.0) {
+                new Thread(() -> {
+                    Geocoder geocoder = new Geocoder(context, Locale.getDefault());
+                    try {
+                        List<Address> addresses = geocoder.getFromLocation(latitude, longitude, 1);
+                        if (addresses != null && !addresses.isEmpty()) {
+                            Address addressObj = addresses.get(0);
+                            String fullAddress = addressObj.getAddressLine(0);
+                            
+                            // 日本国内の住所表記で不要な国名表記等をトリミングしてスッキリさせる
+                            if (fullAddress != null) {
+                                fullAddress = fullAddress.replaceFirst("^日本、(〒\\d{3}-\\d{4}\\s+)?", "");
+                            } else {
+                                fullAddress = "住所不明";
+                            }
+                            
+                            final String resolvedAddress = fullAddress;
+                            mainHandler.post(() -> {
+                                log.setAddress(resolvedAddress);
+                                if (context instanceof MainActivity) {
+                                    RecyclerView rv = ((MainActivity) context).findViewById(R.id.recycler_view_log);
+                                    if (rv != null && rv.getAdapter() != null) {
+                                        rv.getAdapter().notifyDataSetChanged();
+                                    }
+                                }
+                            });
+                        } else {
+                            mainHandler.post(() -> log.setAddress("住所不明"));
+                        }
+                    } catch (IOException e) {
+                        Log.e("TrafficEventHandler", "Failed to geocode location", e);
+                        mainHandler.post(() -> log.setAddress("住所の取得に失敗しました"));
+                    }
+                }).start();
+            }
         });
     }
 }
